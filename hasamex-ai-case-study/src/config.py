@@ -1,4 +1,5 @@
 import os
+import streamlit as st
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -23,6 +24,12 @@ TRANSCRIPT_FILES = [
 
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+
+if not GOOGLE_API_KEY:
+    try:
+        GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+    except (KeyError, FileNotFoundError):
+        GOOGLE_API_KEY = ""
 
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
