@@ -41,24 +41,44 @@ st.set_page_config(
 
 
 
-@st.cache_resource(show_spinner="Preparing database and vector index...")
-def initialize_app_resources():
+@st.cache_resource(
+    show_spinner="Loading transcript database..."
+)
+def initialize_database():
     """
-    First-run setup: parse transcripts into SQLite if needed, then build or
-    load the FAISS vector index. Cached so Streamlit reruns (e.g. widget
-    interactions) do not repeat this work or re-embed the transcripts.
+    Initialize SQLite and load the transcripts if needed.
+    This does not call Gemini or build the FAISS index.
     """
+
     ensure_directories()
     database.init_db()
 
     if not database.is_database_populated():
         parsed = parse_all_transcripts(TRANSCRIPT_FILES)
+
         for expert, segments in parsed:
-            database.insert_expert_and_transcript(expert, segments)
+            database.insert_expert_and_transcript(
+                expert,
+                segments
+            )
+
+    return True
+
+
+@st.cache_resource(
+    show_spinner="Preparing AI knowledge base..."
+)
+def initialize_vector_store():
+    """
+    Load an existing FAISS index or build it if missing.
+    This runs only when an AI-powered page needs retrieval.
+    """
+
+    initialize_database()
 
     all_segments = database.get_all_segments()
-    vector_store = build_or_load_vector_store(all_segments)
-    return vector_store
+
+    return build_or_load_vector_store(all_segments)
 
 
 def get_interview_questions():
@@ -325,31 +345,47 @@ answer is downgraded to "Insufficient evidence in the transcript."
 
 
 def main():
+
     if not GOOGLE_API_KEY:
         st.error(
-            "GOOGLE_API_KEY is not set. Copy `.env.example` to `.env` and add your "
-            "Google AI Studio API key, then restart the app."
+            "GOOGLE_API_KEY is not set. "
+            "Configure your API key in .env or Streamlit Secrets."
         )
         st.stop()
 
+    # Initialize SQLite without loading FAISS or calling Gemini.
     try:
-        vector_store = initialize_app_resources()
+        initialize_database()
+
     except FileNotFoundError as exc:
         st.error(f"Missing transcript file: {exc}")
         st.stop()
+
     except TranscriptParsingError as exc:
         st.error(f"Could not parse transcripts: {exc}")
         st.stop()
-    except Exception as exc:  # noqa: BLE001 - surfaced deliberately to the user
-        st.error(f"Failed to initialize the app: {exc}")
+
+    except Exception as exc:
+        st.error(f"Database initialization failed: {exc}")
         st.stop()
 
-    experts = [dict(e) for e in database.get_all_experts()]
+    # Load lightweight data for the UI.
+    experts = [
+        dict(expert)
+        for expert in database.get_all_experts()
+    ]
+
     questions = get_interview_questions()
 
+    # Display navigation.
     st.sidebar.title("Navigation")
+
     st.sidebar.caption(f"Model: `{GEMINI_MODEL}`")
-    st.sidebar.caption(f"Embeddings: `{GEMINI_EMBEDDING_MODEL}`")
+
+    st.sidebar.caption(
+        f"Embeddings: `{GEMINI_EMBEDDING_MODEL}`"
+    )
+
     page = st.sidebar.radio(
         "Go to",
         [
@@ -361,16 +397,38 @@ def main():
         ],
     )
 
+    # Pages that do not require Gemini or FAISS.
     if page == "Overview":
         page_overview(experts, questions)
-    elif page == "Interview Guide":
-        page_interview_guide(experts, questions, vector_store)
+        return
+
+    if page == "Methodology / Architecture":
+        page_methodology()
+        return
+
+    # Initialize FAISS only when an AI-powered page is opened.
+    try:
+        vector_store = initialize_vector_store()
+
+    except Exception as exc:
+        st.error(
+            f"Failed to initialize AI knowledge base: {exc}"
+        )
+        st.stop()
+
+    # AI-powered pages.
+    if page == "Interview Guide":
+        page_interview_guide(
+            experts,
+            questions,
+            vector_store
+        )
+
     elif page == "Cross-Call Analysis":
         page_cross_call(vector_store)
+
     elif page == "Ask the Transcripts":
         page_ask_transcripts(vector_store)
-    else:
-        page_methodology()
 
 
 if __name__ == "__main__":
